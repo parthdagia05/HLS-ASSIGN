@@ -10,6 +10,7 @@ added in later phases.
 
 from __future__ import annotations
 
+import time
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -17,6 +18,8 @@ from fastapi import FastAPI, HTTPException, Query
 from fastapi.staticfiles import StaticFiles
 
 from app import db
+from app.cache.distributed_cache import cache
+from app.metrics import metrics
 from app.models import (
     SearchRequest,
     SearchResponse,
@@ -62,7 +65,10 @@ def suggest(q: str = Query(default="", description="The prefix the user typed"))
     both return an empty list (never an error) so the UI can call this on every
     keystroke safely.
     """
+    start = time.perf_counter()
     results = suggestions.get_suggestions(q)
+    # Record end-to-end service latency (cache + DB) so /metrics can report p95.
+    metrics.record_suggest_latency((time.perf_counter() - start) * 1000.0)
     return SuggestResponse(prefix=normalize_query(q), suggestions=results)
 
 
@@ -77,6 +83,7 @@ def search(req: SearchRequest):
     query = normalize_query(req.query)
     if not query:
         raise HTTPException(status_code=400, detail="query must not be empty")
+    metrics.record_search_submission()
     db.record_search(query)
     return SearchResponse(message="Searched", query=query)
 
@@ -85,6 +92,27 @@ def search(req: SearchRequest):
 def trending(limit: int = Query(default=10, ge=1, le=50)):
     """Currently trending searches, shown on the home page."""
     return TrendingResponse(trending=db.fetch_trending(limit))
+
+
+@app.get("/cache/debug")
+def cache_debug(prefix: str = Query(..., description="Prefix to inspect")):
+    """Show which cache node owns a prefix and whether it is a hit or a miss.
+
+    This makes the consistent-hashing routing observable: try several prefixes
+    and watch them map to different nodes.
+    """
+    normalized = normalize_query(prefix)
+    # "basic" matches the namespace the suggestion service currently writes to.
+    return cache.debug(mode="basic", prefix=normalized)
+
+
+@app.get("/metrics")
+def get_metrics():
+    """Cache hit rate, DB read/write counts, suggestion latency percentiles,
+    and the health of each cache node."""
+    snapshot = metrics.snapshot()
+    snapshot["cache"]["nodes"] = cache.node_health()
+    return snapshot
 
 
 # Serve the frontend (index.html + assets) at the site root. This mount is added

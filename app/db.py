@@ -22,6 +22,7 @@ from __future__ import annotations
 from psycopg_pool import ConnectionPool
 
 from app.config import settings
+from app.metrics import metrics
 from app.textutil import like_prefix_pattern
 
 # A process-wide connection pool. `open=True` connects lazily on first use.
@@ -115,6 +116,7 @@ def record_search(query: str) -> None:
             """,
             (query,),
         )
+    metrics.record_db_write(1)
 
 
 def fetch_trending(limit: int) -> list[dict]:
