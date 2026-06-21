@@ -96,6 +96,17 @@ body {
 .suggestion .match { color: var(--accent); font-weight: 700; }
 .suggestion .count { color: var(--muted); font-size: 0.82rem; flex-shrink: 0; }
 
+/* --- Ranking mode toggle --- */
+.mode-toggle {
+  display: flex;
+  gap: 18px;
+  margin: 14px 2px 0;
+  font-size: 0.85rem;
+  color: var(--muted);
+}
+.mode-toggle label { cursor: pointer; display: inline-flex; align-items: center; gap: 6px; }
+.mode-toggle input { accent-color: var(--accent); }
+
 /* --- Status line (loading / error / hints) --- */
 .status { min-height: 22px; margin: 14px 2px; font-size: 0.9rem; color: var(--muted); }
 .status.error { color: var(--danger); }

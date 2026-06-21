@@ -57,19 +57,30 @@ def health() -> dict:
 
 
 @app.get("/suggest", response_model=SuggestResponse)
-def suggest(q: str = Query(default="", description="The prefix the user typed")):
+def suggest(
+    q: str = Query(default="", description="The prefix the user typed"),
+    mode: str | None = Query(
+        default=None,
+        description='Ranking: "basic" (all-time count) or "trending" '
+        "(recency-aware). Defaults to DEFAULT_RANKING_MODE.",
+    ),
+):
     """Typeahead suggestions for a prefix.
 
-    Returns up to `SUGGESTION_LIMIT` (default 10) queries that start with `q`,
-    sorted by popularity. Empty/whitespace prefixes and prefixes with no matches
-    both return an empty list (never an error) so the UI can call this on every
-    keystroke safely.
+    Returns up to `SUGGESTION_LIMIT` (default 10) queries that start with `q`.
+    The SAME endpoint serves both rankings via `mode`, so you can compare them
+    directly. Empty/whitespace prefixes and prefixes with no matches both return
+    an empty list (never an error) so the UI can call this on every keystroke.
     """
     start = time.perf_counter()
-    results = suggestions.get_suggestions(q)
+    results = suggestions.get_suggestions(q, mode=mode)
     # Record end-to-end service latency (cache + DB) so /metrics can report p95.
     metrics.record_suggest_latency((time.perf_counter() - start) * 1000.0)
-    return SuggestResponse(prefix=normalize_query(q), suggestions=results)
+    return SuggestResponse(
+        prefix=normalize_query(q),
+        mode=suggestions.resolve_mode(mode),
+        suggestions=results,
+    )
 
 
 @app.post("/search", response_model=SearchResponse)
@@ -85,6 +96,9 @@ def search(req: SearchRequest):
         raise HTTPException(status_code=400, detail="query must not be empty")
     metrics.record_search_submission()
     db.record_search(query)
+    # Rankings for this query's prefixes just changed -> drop stale cache entries.
+    # (Phase 5 moves both the write and this invalidation into the batch flush.)
+    cache.invalidate_query(query)
     return SearchResponse(message="Searched", query=query)
 
 
@@ -95,15 +109,17 @@ def trending(limit: int = Query(default=10, ge=1, le=50)):
 
 
 @app.get("/cache/debug")
-def cache_debug(prefix: str = Query(..., description="Prefix to inspect")):
+def cache_debug(
+    prefix: str = Query(..., description="Prefix to inspect"),
+    mode: str | None = Query(default=None, description='"basic" or "trending"'),
+):
     """Show which cache node owns a prefix and whether it is a hit or a miss.
 
     This makes the consistent-hashing routing observable: try several prefixes
     and watch them map to different nodes.
     """
     normalized = normalize_query(prefix)
-    # "basic" matches the namespace the suggestion service currently writes to.
-    return cache.debug(mode="basic", prefix=normalized)
+    return cache.debug(mode=suggestions.resolve_mode(mode), prefix=normalized)
 
 
 @app.get("/metrics")

@@ -68,10 +68,17 @@ function onInput() {
   debounceTimer = setTimeout(() => fetchSuggestions(prefix), DEBOUNCE_MS);
 }
 
+// Which ranking the user picked in the toggle (defaults to "trending").
+function currentMode() {
+  return document.querySelector('input[name="mode"]:checked')?.value || "trending";
+}
+
 async function fetchSuggestions(prefix) {
   setStatus("Loading suggestions…", false, true);
   try {
-    const res = await fetch(`/suggest?q=${encodeURIComponent(prefix)}`);
+    const res = await fetch(
+      `/suggest?q=${encodeURIComponent(prefix)}&mode=${currentMode()}`
+    );
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const data = await res.json();
     suggestions = data.suggestions || [];
@@ -215,6 +222,15 @@ trendingList.addEventListener("click", (e) => {
   activeIndex = -1;
   sendSearch(chip.dataset.query);
 });
+
+// Re-run the current query when the ranking mode changes, so the effect of
+// switching basic <-> trending is visible immediately.
+document.querySelectorAll('input[name="mode"]').forEach((radio) =>
+  radio.addEventListener("change", () => {
+    const prefix = input.value.trim();
+    if (prefix) fetchSuggestions(prefix);
+  })
+);
 
 // Close the dropdown when clicking outside the search area.
 document.addEventListener("click", (e) => {

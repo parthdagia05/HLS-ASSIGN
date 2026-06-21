@@ -44,6 +44,13 @@
     <ul id="suggestions" class="suggestions" role="listbox" hidden></ul>
   </div>
 
+  <!-- Ranking toggle: the SAME /suggest API serves both, switched via ?mode=.
+       Lets you see basic (all-time count) vs trending (recency-aware) live. -->
+  <div class="mode-toggle" role="radiogroup" aria-label="Ranking mode">
+    <label><input type="radio" name="mode" value="trending" checked /> Trending (recency-aware)</label>
+    <label><input type="radio" name="mode" value="basic" /> Basic (all-time count)</label>
+  </div>
+
   <!-- Status line: loading spinner / error message / hints. -->
   <div id="status" class="status" role="status" aria-live="polite"></div>
 

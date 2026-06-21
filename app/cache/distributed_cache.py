@@ -93,6 +93,25 @@ class DistributedCache:
         except redis.RedisError:
             pass
 
+    def invalidate_query(self, query: str) -> None:
+        """Invalidate every cached prefix that could include this query.
+
+        When a query's count/recency changes, the cached suggestion lists for
+        all of its prefixes may now be wrong. We delete the cached entries for
+        prefixes query[:1], query[:2], ... (capped at MAX_PREFIX_LEN, since we
+        only cache up to that length) in BOTH ranking modes.
+
+        Each deleted key is routed through the same ring, so this naturally
+        touches whichever nodes hold those prefixes. Combined with the TTL, this
+        keeps the cache fresh: explicit invalidation for correctness right now,
+        TTL as a backstop for anything we miss.
+        """
+        upper = min(len(query), settings.max_prefix_len)
+        for i in range(1, upper + 1):
+            prefix = query[:i]
+            for mode in ("basic", "trending"):
+                self.delete(mode, prefix)
+
     # --- introspection for GET /cache/debug ---
     def debug(self, mode: str, prefix: str) -> dict:
         """Show which node owns a prefix and whether it is currently cached."""

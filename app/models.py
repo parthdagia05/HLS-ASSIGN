@@ -17,6 +17,7 @@ class Suggestion(BaseModel):
 
 class SuggestResponse(BaseModel):
     prefix: str                  # the normalised prefix we actually searched for
+    mode: str                    # ranking used: "basic" or "trending"
     suggestions: list[Suggestion]
 
 

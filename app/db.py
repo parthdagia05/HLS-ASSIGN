@@ -19,11 +19,29 @@ Schema (single table `queries`):
 
 from __future__ import annotations
 
+import math
+
 from psycopg_pool import ConnectionPool
 
 from app.config import settings
 from app.metrics import metrics
 from app.textutil import like_prefix_pattern
+
+# Exponential-decay constant derived from the configured half-life.
+# A query's recent_score decays by half every `recency_halflife_seconds`.
+#   decay(age) = exp(-DECAY_LAMBDA * age)   and   exp(-LAMBDA * halflife) = 0.5
+DECAY_LAMBDA = math.log(2) / settings.recency_halflife_seconds
+
+# SQL fragment: the recent_score decayed to "now". Reused by trending ranking
+# and by the trending list. recent_score_updated_at records when the stored
+# recent_score was last refreshed, so we decay from that moment to now().
+# Columns are qualified with `queries.` so the same fragment is unambiguous both
+# in a SELECT and inside an ON CONFLICT ... DO UPDATE (where bare `recent_score`
+# could mean either the existing row or the proposed EXCLUDED row).
+_DECAYED_RECENT = (
+    "queries.recent_score * "
+    "exp(-%(lam)s * EXTRACT(EPOCH FROM (now() - queries.recent_score_updated_at)))"
+)
 
 # A process-wide connection pool. `open=True` connects lazily on first use.
 # min/max sizing is modest -- enough for a local demo with concurrent requests.
@@ -72,62 +90,95 @@ def row_count() -> int:
         return int(result[0]) if result else 0
 
 
-def fetch_suggestions(prefix: str, limit: int) -> list[dict]:
-    """Top `limit` queries that start with `prefix`, most popular first.
+def fetch_suggestions(prefix: str, limit: int, mode: str = "basic") -> list[dict]:
+    r"""Top `limit` queries that start with `prefix`.
 
-    This is the "basic" ranking required for the core marks: pure all-time
-    popularity (ORDER BY count DESC). The recency-aware "trending" ranking is
-    layered on top of this in Phase 4.
+    Two ranking modes share this one query (and the same /suggest API):
 
-    `prefix` must already be normalised (lowercased/trimmed). The caller is
-    responsible for that; see app.services.suggestions.
+      * "basic"    -> ORDER BY count DESC. Pure all-time popularity. This is the
+                      core-marks behaviour: historically popular queries first.
+
+      * "trending" -> ORDER BY (count + alpha * decayed_recent_score) DESC.
+                      Recently searched queries get a temporary boost on top of
+                      their historical count. Because the recent score decays,
+                      a short-lived spike fades back to the count-based order
+                      over time (see DECAY_LAMBDA) -- so nothing stays
+                      over-ranked permanently.
+
+    `prefix` must already be normalised. The score expression is computed only
+    over the rows matching the prefix (a small set), so this stays fast.
     """
     pattern = like_prefix_pattern(prefix)
+    if mode == "trending":
+        order_by = f"(count + %(alpha)s * {_DECAYED_RECENT}) DESC, count DESC, query ASC"
+    else:
+        order_by = "count DESC, query ASC"
+
+    sql = (
+        r"SELECT query, count FROM queries "
+        r"WHERE query LIKE %(pattern)s ESCAPE '\' "
+        f"ORDER BY {order_by} "
+        r"LIMIT %(limit)s"
+    )
+    params = {
+        "pattern": pattern,
+        "limit": limit,
+        "alpha": settings.recency_alpha,
+        "lam": DECAY_LAMBDA,
+    }
     with pool.connection() as conn:
-        rows = conn.execute(
-            r"""
-            SELECT query, count
-            FROM queries
-            WHERE query LIKE %s ESCAPE '\'
-            ORDER BY count DESC, query ASC
-            LIMIT %s
-            """,
-            (pattern, limit),
-        ).fetchall()
-    # rows are tuples (query, count); shape them into plain dicts for the API.
+        rows = conn.execute(sql, params).fetchall()
     return [{"query": q, "count": c} for q, c in rows]
 
 
-def record_search(query: str) -> None:
-    """Record one submitted search by incrementing its count.
+def record_search(query: str, delta: int = 1) -> None:
+    """Record `delta` searches for one query (count + recency).
 
-    NOTE: this is the *naive synchronous* write -- one DB round trip per search.
-    It is correct and simple, and it is exactly the baseline that Phase 5
-    (batch writes) improves upon. A brand-new query is inserted with count = 1.
+    Two things happen to the row:
+      * count           += delta              (all-time popularity)
+      * recent_score     = decay(old) + delta (recency, for trending)
+        and recent_score_updated_at is reset to now().
+
+    The "decay(old)" step is the key idea: before adding new activity we shrink
+    the previously stored recent_score by how much time has passed, so the score
+    always reflects *recent* volume rather than total volume. A new query starts
+    with recent_score = delta.
+
+    NOTE: this is still the *naive synchronous* write (one DB round trip).
+    Phase 5 keeps this exact SQL but feeds it pre-aggregated batches instead of
+    one call per search. `delta` already supports that.
     """
     with pool.connection() as conn:
         conn.execute(
-            """
-            INSERT INTO queries (query, count, last_searched_at)
-            VALUES (%s, 1, now())
+            f"""
+            INSERT INTO queries (query, count, recent_score,
+                                 recent_score_updated_at, last_searched_at)
+            VALUES (%(query)s, %(delta)s, %(delta)s, now(), now())
             ON CONFLICT (query) DO UPDATE
-                SET count = queries.count + 1,
+                SET count = queries.count + %(delta)s,
+                    recent_score = {_DECAYED_RECENT} + %(delta)s,
+                    recent_score_updated_at = now(),
                     last_searched_at = now()
             """,
-            (query,),
+            {"query": query, "delta": delta, "lam": DECAY_LAMBDA},
         )
     metrics.record_db_write(1)
 
 
 def fetch_trending(limit: int) -> list[dict]:
-    """Top `limit` queries overall, most popular first.
+    """Top `limit` *trending* queries: ranked by decayed recent activity, with
+    all-time count as a tie-breaker.
 
-    Phase 2 version: pure all-time popularity. Phase 4 replaces this with a
-    recency-aware ranking so genuinely *trending* (recently hot) queries surface.
+    On a freshly loaded dataset nothing has been searched yet, so every
+    recent_score is 0 and the tie-breaker makes this fall back to "most popular
+    overall" -- a sensible default. As users search, recently hot queries rise
+    to the top and then fade again as their recent_score decays.
     """
+    sql = (
+        f"SELECT query, count FROM queries "
+        f"ORDER BY ({_DECAYED_RECENT}) DESC, count DESC, query ASC "
+        f"LIMIT %(limit)s"
+    )
     with pool.connection() as conn:
-        rows = conn.execute(
-            "SELECT query, count FROM queries ORDER BY count DESC, query ASC LIMIT %s",
-            (limit,),
-        ).fetchall()
+        rows = conn.execute(sql, {"limit": limit, "lam": DECAY_LAMBDA}).fetchall()
     return [{"query": q, "count": c} for q, c in rows]
