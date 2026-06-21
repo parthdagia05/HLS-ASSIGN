@@ -1,0 +1,55 @@
+# Local infrastructure for the Search Typeahead system.
+#
+# We deliberately run THREE separate Redis containers instead of one.
+# Each container is a "logical cache node". The application code
+# (app/cache/consistent_hash.py) decides which node a given prefix lives on
+# using consistent hashing. This is what makes the cache "distributed" and is
+# the part of the assignment we implement and explain ourselves -- rather than
+# hiding it inside Redis Cluster.
+#
+# Bring everything up with:   docker compose up -d
+# Tear everything down with:  docker compose down       (add -v to wipe data)
+
+services:
+  # ---- Primary data store: PostgreSQL ----
+  postgres:
+    image: postgres:16
+    container_name: typeahead-postgres
+    environment:
+      POSTGRES_USER: typeahead
+      POSTGRES_PASSWORD: typeahead
+      POSTGRES_DB: typeahead
+    ports:
+      - "5433:5432" # host:container. We use 5433 on the host to avoid clashing
+                    # with any PostgreSQL already running locally on 5432.
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U typeahead"]
+      interval: 3s
+      timeout: 3s
+      retries: 10
+
+  # ---- Cache node 1 ----
+  redis-1:
+    image: redis:7
+    container_name: typeahead-redis-1
+    ports:
+      - "6391:6379"
+
+  # ---- Cache node 2 ----
+  redis-2:
+    image: redis:7
+    container_name: typeahead-redis-2
+    ports:
+      - "6392:6379"
+
+  # ---- Cache node 3 ----
+  redis-3:
+    image: redis:7
+    container_name: typeahead-redis-3
+    ports:
+      - "6393:6379"
+
+volumes:
+  postgres-data:

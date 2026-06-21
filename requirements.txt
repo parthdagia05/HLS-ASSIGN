@@ -1,0 +1,12 @@
+# --- Web framework ---
+fastapi==0.115.6          # HTTP API + automatic OpenAPI docs at /docs
+uvicorn[standard]==0.34.0 # ASGI server that runs the FastAPI app
+
+# --- Primary data store (PostgreSQL) ---
+psycopg[binary]==3.2.3    # PostgreSQL driver (psycopg 3). [binary] ships the C libpq.
+psycopg-pool==3.2.4       # Connection pool so we reuse DB connections instead of
+                          # opening one per request (important for low latency).
+
+# --- Distributed cache ---
+redis==5.2.1              # Client for talking to each Redis node. We do the
+                          # consistent-hashing / node-routing ourselves in app code.
