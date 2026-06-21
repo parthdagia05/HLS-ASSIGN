@@ -131,40 +131,6 @@ def fetch_suggestions(prefix: str, limit: int, mode: str = "basic") -> list[dict
     return [{"query": q, "count": c} for q, c in rows]
 
 
-def record_search(query: str, delta: int = 1) -> None:
-    """Record `delta` searches for one query (count + recency).
-
-    Two things happen to the row:
-      * count           += delta              (all-time popularity)
-      * recent_score     = decay(old) + delta (recency, for trending)
-        and recent_score_updated_at is reset to now().
-
-    The "decay(old)" step is the key idea: before adding new activity we shrink
-    the previously stored recent_score by how much time has passed, so the score
-    always reflects *recent* volume rather than total volume. A new query starts
-    with recent_score = delta.
-
-    NOTE: this is still the *naive synchronous* write (one DB round trip).
-    Phase 5 keeps this exact SQL but feeds it pre-aggregated batches instead of
-    one call per search. `delta` already supports that.
-    """
-    with pool.connection() as conn:
-        conn.execute(
-            f"""
-            INSERT INTO queries (query, count, recent_score,
-                                 recent_score_updated_at, last_searched_at)
-            VALUES (%(query)s, %(delta)s, %(delta)s, now(), now())
-            ON CONFLICT (query) DO UPDATE
-                SET count = queries.count + %(delta)s,
-                    recent_score = {_DECAYED_RECENT} + %(delta)s,
-                    recent_score_updated_at = now(),
-                    last_searched_at = now()
-            """,
-            {"query": query, "delta": delta, "lam": DECAY_LAMBDA},
-        )
-    metrics.record_db_write(1)
-
-
 def apply_batch(aggregated: dict[str, int]) -> int:
     """Apply a whole batch of search counts in ONE database round trip.
 
@@ -173,8 +139,15 @@ def apply_batch(aggregated: dict[str, int]) -> int:
     INSERT ... ON CONFLICT DO UPDATE so that, no matter how many searches were
     submitted, the database sees exactly one statement per flush.
 
-    This is the same per-query maths as record_search (count += delta, recent
-    score decayed-then-bumped), just applied to many queries at once.
+    Per query, two things happen to the row:
+      * count        += delta                 (all-time popularity)
+      * recent_score  = decay(old) + delta     (recency, for trending ranking)
+        with recent_score_updated_at reset to now().
+
+    The "decay(old)" step is the key idea behind trending: before adding new
+    activity we shrink the previously stored recent_score by how much time has
+    passed, so the score reflects *recent* volume, not lifetime volume. A
+    brand-new query starts with count = recent_score = delta.
 
     Returns the number of distinct queries written (== rows in the statement).
     """

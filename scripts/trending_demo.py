@@ -34,10 +34,10 @@ def get_json(path: str) -> dict:
         return json.loads(resp.read())
 
 
-def post_search(query: str) -> None:
-    data = json.dumps({"query": query}).encode()
+def post(path: str, body: dict | None = None) -> None:
+    data = json.dumps(body or {}).encode()
     req = urllib.request.Request(
-        f"{BASE}/search", data=data, headers={"Content-Type": "application/json"}
+        f"{BASE}{path}", data=data, headers={"Content-Type": "application/json"}
     )
     urllib.request.urlopen(req).read()
 
@@ -75,7 +75,11 @@ def main() -> None:
 
     print(f"\nSubmitting {BURST} searches for {TARGET!r} ...")
     for _ in range(BURST):
-        post_search(TARGET)
+        post("/search", {"query": TARGET})
+
+    # Searches are batched (Phase 5), so force a flush to land them in the DB
+    # and invalidate the affected cache entries before we re-read the rankings.
+    post("/batch/flush")
 
     basic_after = ranking(PREFIX, "basic")
     trending_after = ranking(PREFIX, "trending")
