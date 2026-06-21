@@ -27,6 +27,7 @@ from app.models import (
     TrendingResponse,
 )
 from app.services import suggestions
+from app.services.batch_writer import batch_writer
 from app.textutil import normalize_query
 
 FRONTEND_DIR = Path(__file__).resolve().parent.parent / "frontend"
@@ -34,10 +35,13 @@ FRONTEND_DIR = Path(__file__).resolve().parent.parent / "frontend"
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Startup/shutdown hook. We open the DB pool (and ensure the schema)
-    before serving traffic, and close it cleanly on shutdown."""
+    """Startup/shutdown hook. We open the DB pool (and ensure the schema), start
+    the batch writer (which first recovers any un-flushed WAL), serve traffic,
+    then drain the batch writer and close the pool cleanly on shutdown."""
     db.init()
+    batch_writer.start()
     yield
+    batch_writer.stop()  # final flush so a clean shutdown loses nothing
     db.close()
 
 
@@ -88,17 +92,17 @@ def search(req: SearchRequest):
     """Submit a search. Returns the dummy {"message": "Searched"} response and
     records the query so it influences future suggestions and trending.
 
-    An empty query is rejected; everything else is normalised and recorded.
-    (Phase 2 records synchronously; Phase 5 routes this through a batch writer.)
+    The write does NOT hit the database here. We hand the query to the batch
+    writer, which buffers + aggregates it and flushes many searches in a single
+    statement (see app/services/batch_writer.py). The DB write and cache
+    invalidation happen later, on flush. This keeps POST /search fast and slashes
+    the number of database writes.
     """
     query = normalize_query(req.query)
     if not query:
         raise HTTPException(status_code=400, detail="query must not be empty")
     metrics.record_search_submission()
-    db.record_search(query)
-    # Rankings for this query's prefixes just changed -> drop stale cache entries.
-    # (Phase 5 moves both the write and this invalidation into the batch flush.)
-    cache.invalidate_query(query)
+    batch_writer.submit(query)
     return SearchResponse(message="Searched", query=query)
 
 
@@ -120,6 +124,14 @@ def cache_debug(
     """
     normalized = normalize_query(prefix)
     return cache.debug(mode=suggestions.resolve_mode(mode), prefix=normalized)
+
+
+@app.post("/batch/flush")
+def batch_flush():
+    """Force the batch writer to flush its buffer to the database right now.
+    Handy for demos/tests so you don't have to wait for the flush interval."""
+    written = batch_writer.flush()
+    return {"flushed_distinct_queries": written}
 
 
 @app.get("/metrics")

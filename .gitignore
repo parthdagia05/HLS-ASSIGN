@@ -11,6 +11,10 @@ venv/
 # Generated dataset (large; regenerate via scripts/generate_dataset.py)
 data/*.csv
 
+# Batch-writer write-ahead log (runtime state)
+data/*.wal
+data/*.wal.flushing
+
 # Local tooling
 .pytest_cache/
 .mypy_cache/

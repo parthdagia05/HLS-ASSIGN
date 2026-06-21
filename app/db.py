@@ -165,6 +165,51 @@ def record_search(query: str, delta: int = 1) -> None:
     metrics.record_db_write(1)
 
 
+def apply_batch(aggregated: dict[str, int]) -> int:
+    """Apply a whole batch of search counts in ONE database round trip.
+
+    `aggregated` maps query -> number of times it was searched in this batch
+    (already summed by the batch writer). We build a single multi-row
+    INSERT ... ON CONFLICT DO UPDATE so that, no matter how many searches were
+    submitted, the database sees exactly one statement per flush.
+
+    This is the same per-query maths as record_search (count += delta, recent
+    score decayed-then-bumped), just applied to many queries at once.
+
+    Returns the number of distinct queries written (== rows in the statement).
+    """
+    if not aggregated:
+        return 0
+
+    # All parameters are passed by NAME (q0, c0, q1, c1, ...) so they can coexist
+    # with the named %(lam)s used inside the _DECAYED_RECENT fragment. (psycopg
+    # does not allow mixing positional %s and named %(...)s in one query.)
+    params: dict = {"lam": DECAY_LAMBDA}
+    row_placeholders = []
+    for i, (query, delta) in enumerate(aggregated.items()):
+        params[f"q{i}"] = query
+        params[f"c{i}"] = delta  # count delta == recent_score delta for this query
+        row_placeholders.append(f"(%(q{i})s, %(c{i})s, %(c{i})s, now(), now())")
+    values_sql = ", ".join(row_placeholders)
+
+    sql = f"""
+        INSERT INTO queries (query, count, recent_score,
+                             recent_score_updated_at, last_searched_at)
+        VALUES {values_sql}
+        ON CONFLICT (query) DO UPDATE
+            SET count = queries.count + EXCLUDED.count,
+                recent_score = {_DECAYED_RECENT} + EXCLUDED.recent_score,
+                recent_score_updated_at = now(),
+                last_searched_at = now()
+    """
+    with pool.connection() as conn:
+        conn.execute(sql, params)
+
+    written = len(aggregated)
+    metrics.record_db_write(written)
+    return written
+
+
 def fetch_trending(limit: int) -> list[dict]:
     """Top `limit` *trending* queries: ranked by decayed recent activity, with
     all-time count as a tie-breaker.

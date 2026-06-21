@@ -72,6 +72,11 @@ class Settings:
     # --- Batch writes ---
     batch_size: int = int(os.getenv("BATCH_SIZE", "500"))
     flush_interval_seconds: float = float(os.getenv("FLUSH_INTERVAL_SECONDS", "2.0"))
+    # Write-ahead log: persist each submission to a local file so a crash before
+    # the next flush can be recovered on restart. Disable to trade durability
+    # for a bit more throughput (pure in-memory buffer).
+    batch_wal_enabled: bool = os.getenv("BATCH_WAL_ENABLED", "true").lower() == "true"
+    batch_wal_path: str = os.getenv("BATCH_WAL_PATH", "data/batch.wal")
 
 
 # A single shared instance imported everywhere: `from app.config import settings`.
