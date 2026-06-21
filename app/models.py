@@ -18,3 +18,16 @@ class Suggestion(BaseModel):
 class SuggestResponse(BaseModel):
     prefix: str                  # the normalised prefix we actually searched for
     suggestions: list[Suggestion]
+
+
+class SearchRequest(BaseModel):
+    query: str
+
+
+class SearchResponse(BaseModel):
+    message: str                 # always "Searched" (the dummy search response)
+    query: str                   # the normalised query we recorded
+
+
+class TrendingResponse(BaseModel):
+    trending: list[Suggestion]

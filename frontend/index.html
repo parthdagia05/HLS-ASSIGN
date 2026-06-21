@@ -1,0 +1,60 @@
+<!--
+  Search Typeahead UI.
+
+  This single page talks to three backend endpoints:
+    GET  /suggest?q=<prefix>   -> live suggestions while typing
+    POST /search               -> submit a search (records it, returns "Searched")
+    GET  /trending             -> trending searches shown below the box
+
+  All behaviour lives in app.js; this file is just structure, and style.css is
+  just presentation. No build step, no framework -- easy to read.
+
+  NOTE: the file is served by FastAPI's StaticFiles mount (see app/main.py), so
+  it is reachable at http://localhost:8000/.
+-->
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Search Typeahead</title>
+<link rel="stylesheet" href="style.css" />
+
+<main class="page">
+  <h1 class="title">🔎 Search Typeahead</h1>
+  <p class="subtitle">Start typing — suggestions are served from a distributed cache.</p>
+
+  <!-- Search box + suggestion dropdown.
+       role/aria attributes give us basic accessibility for the combobox. -->
+  <div class="search">
+    <div class="search-row">
+      <input
+        id="search-input"
+        class="search-input"
+        type="text"
+        autocomplete="off"
+        spellcheck="false"
+        placeholder="Search for anything…"
+        role="combobox"
+        aria-expanded="false"
+        aria-autocomplete="list"
+        aria-controls="suggestions"
+      />
+      <button id="search-button" class="search-button">Search</button>
+    </div>
+
+    <!-- Populated by JS. Each child is a .suggestion row. -->
+    <ul id="suggestions" class="suggestions" role="listbox" hidden></ul>
+  </div>
+
+  <!-- Status line: loading spinner / error message / hints. -->
+  <div id="status" class="status" role="status" aria-live="polite"></div>
+
+  <!-- The dummy search response from POST /search is shown here. -->
+  <section id="result" class="result" hidden></section>
+
+  <!-- Trending searches, fetched on load and refreshed after each search. -->
+  <section class="trending">
+    <h2 class="trending-title">🔥 Trending searches</h2>
+    <div id="trending-list" class="trending-list"></div>
+  </section>
+</main>
+
+<script src="app.js"></script>

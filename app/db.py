@@ -95,3 +95,37 @@ def fetch_suggestions(prefix: str, limit: int) -> list[dict]:
         ).fetchall()
     # rows are tuples (query, count); shape them into plain dicts for the API.
     return [{"query": q, "count": c} for q, c in rows]
+
+
+def record_search(query: str) -> None:
+    """Record one submitted search by incrementing its count.
+
+    NOTE: this is the *naive synchronous* write -- one DB round trip per search.
+    It is correct and simple, and it is exactly the baseline that Phase 5
+    (batch writes) improves upon. A brand-new query is inserted with count = 1.
+    """
+    with pool.connection() as conn:
+        conn.execute(
+            """
+            INSERT INTO queries (query, count, last_searched_at)
+            VALUES (%s, 1, now())
+            ON CONFLICT (query) DO UPDATE
+                SET count = queries.count + 1,
+                    last_searched_at = now()
+            """,
+            (query,),
+        )
+
+
+def fetch_trending(limit: int) -> list[dict]:
+    """Top `limit` queries overall, most popular first.
+
+    Phase 2 version: pure all-time popularity. Phase 4 replaces this with a
+    recency-aware ranking so genuinely *trending* (recently hot) queries surface.
+    """
+    with pool.connection() as conn:
+        rows = conn.execute(
+            "SELECT query, count FROM queries ORDER BY count DESC, query ASC LIMIT %s",
+            (limit,),
+        ).fetchall()
+    return [{"query": q, "count": c} for q, c in rows]

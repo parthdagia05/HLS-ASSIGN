@@ -1,0 +1,145 @@
+/* Presentation only. Clean, modern, readable layout for the typeahead UI. */
+
+:root {
+  --bg: #0f172a;          /* page background (slate-900) */
+  --card: #1e293b;        /* panels (slate-800) */
+  --border: #334155;      /* borders (slate-700) */
+  --text: #e2e8f0;        /* primary text (slate-200) */
+  --muted: #94a3b8;       /* secondary text (slate-400) */
+  --accent: #38bdf8;      /* highlights (sky-400) */
+  --accent-strong: #0ea5e9;
+  --danger: #f87171;      /* error text (red-400) */
+  --radius: 12px;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  background: var(--bg);
+  color: var(--text);
+  line-height: 1.5;
+}
+
+.page {
+  max-width: 680px;
+  margin: 0 auto;
+  padding: 64px 20px 96px;
+}
+
+.title { font-size: 2rem; margin: 0 0 6px; }
+.subtitle { color: var(--muted); margin: 0 0 28px; }
+
+/* --- Search box + dropdown --- */
+.search { position: relative; }
+
+.search-row { display: flex; gap: 10px; }
+
+.search-input {
+  flex: 1;
+  padding: 14px 16px;
+  font-size: 1.05rem;
+  color: var(--text);
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  outline: none;
+}
+.search-input:focus { border-color: var(--accent); }
+
+.search-button {
+  padding: 0 22px;
+  font-size: 1rem;
+  font-weight: 600;
+  color: #04293c;
+  background: var(--accent);
+  border: none;
+  border-radius: var(--radius);
+  cursor: pointer;
+}
+.search-button:hover { background: var(--accent-strong); }
+
+/* The suggestion dropdown floats just under the input. */
+.suggestions {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: calc(100% + 6px);
+  margin: 0;
+  padding: 6px;
+  list-style: none;
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: 0 12px 30px rgba(0, 0, 0, 0.45);
+  z-index: 10;
+  max-height: 360px;
+  overflow-y: auto;
+}
+
+.suggestion {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 12px;
+  border-radius: 8px;
+  cursor: pointer;
+}
+/* .active is the keyboard/hover-highlighted row. */
+.suggestion.active,
+.suggestion:hover { background: rgba(56, 189, 248, 0.16); }
+
+.suggestion .text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* The part of the suggestion that matches the typed prefix is bolded. */
+.suggestion .match { color: var(--accent); font-weight: 700; }
+.suggestion .count { color: var(--muted); font-size: 0.82rem; flex-shrink: 0; }
+
+/* --- Status line (loading / error / hints) --- */
+.status { min-height: 22px; margin: 14px 2px; font-size: 0.9rem; color: var(--muted); }
+.status.error { color: var(--danger); }
+
+/* --- Dummy search result panel --- */
+.result {
+  margin-top: 8px;
+  padding: 16px 18px;
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--accent);
+  border-radius: var(--radius);
+}
+.result .result-query { font-weight: 700; }
+.result .result-message { color: var(--muted); margin-top: 4px; }
+
+/* --- Trending --- */
+.trending { margin-top: 48px; }
+.trending-title { font-size: 1.1rem; margin: 0 0 14px; }
+.trending-list { display: flex; flex-wrap: wrap; gap: 10px; }
+
+.trending-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 14px;
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  cursor: pointer;
+  font-size: 0.9rem;
+}
+.trending-chip:hover { border-color: var(--accent); }
+.trending-chip .rank { color: var(--accent); font-weight: 700; }
+
+/* Tiny CSS-only spinner used in the status line while requests are in flight. */
+.spinner {
+  display: inline-block;
+  width: 14px; height: 14px;
+  margin-right: 8px;
+  border: 2px solid var(--border);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  vertical-align: -2px;
+  animation: spin 0.7s linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
