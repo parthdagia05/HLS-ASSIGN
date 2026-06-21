@@ -1,0 +1,307 @@
+<meta charset="utf-8" />
+<title>Search Typeahead — Project Report</title>
+<style>
+  @page { size: A4; margin: 18mm 16mm; }
+  * { box-sizing: border-box; }
+  body {
+    font-family: "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    color: #1f2937; line-height: 1.5; font-size: 11px; margin: 0;
+    -webkit-print-color-adjust: exact; print-color-adjust: exact;
+  }
+  h1 { font-size: 26px; margin: 0 0 4px; color: #0f172a; }
+  h2 { font-size: 17px; margin: 26px 0 8px; color: #0e7490;
+       border-bottom: 2px solid #e2e8f0; padding-bottom: 4px; page-break-after: avoid; }
+  h3 { font-size: 13px; margin: 16px 0 6px; color: #0f172a; page-break-after: avoid; }
+  p { margin: 6px 0; }
+  code { background: #f1f5f9; padding: 1px 5px; border-radius: 4px;
+         font-family: "SFMono-Regular", Consolas, monospace; font-size: 10px; }
+  pre { background: #0f172a; color: #e2e8f0; padding: 12px 14px; border-radius: 8px;
+        font-family: "SFMono-Regular", Consolas, monospace; font-size: 9.5px;
+        line-height: 1.35; overflow-x: auto; page-break-inside: avoid; }
+  table { border-collapse: collapse; width: 100%; margin: 10px 0; font-size: 10px;
+          page-break-inside: avoid; }
+  th, td { border: 1px solid #cbd5e1; padding: 5px 8px; text-align: left; vertical-align: top; }
+  th { background: #f1f5f9; }
+  .cover { border-bottom: 3px solid #0e7490; padding-bottom: 14px; margin-bottom: 6px; }
+  .muted { color: #64748b; }
+  .kpi { display: flex; gap: 10px; margin: 12px 0; }
+  .kpi div { flex: 1; background: #f0f9ff; border: 1px solid #bae6fd; border-radius: 8px;
+             padding: 10px; text-align: center; }
+  .kpi .n { font-size: 18px; font-weight: 700; color: #0369a1; display: block; }
+  .kpi .l { font-size: 9px; color: #475569; }
+  img { max-width: 100%; border: 1px solid #cbd5e1; border-radius: 8px; }
+  .shotrow { display: flex; gap: 10px; page-break-inside: avoid; }
+  .shotrow figure { margin: 0; flex: 1; }
+  figcaption { font-size: 9px; color: #64748b; text-align: center; margin-top: 4px; }
+  .ok { color: #15803d; font-weight: 700; }
+  .pill { background:#ecfeff; border:1px solid #a5f3fc; border-radius:999px; padding:1px 8px; font-size:9px; }
+  ul, ol { margin: 6px 0; padding-left: 20px; }
+  li { margin: 3px 0; }
+  .pb { page-break-before: always; }
+</style>
+
+<div class="cover">
+  <h1>Search Typeahead System — Project Report</h1>
+  <p class="muted">HLD101 Assignment · Author: <strong>Parth Dagia</strong> ·
+     Repository: <code>github.com/parthdagia05/HLS-ASSIGN</code></p>
+</div>
+
+<p>A backend-focused search typeahead (autocomplete) system, similar to the
+suggestion box in Google / Amazon / YouTube. It suggests popular queries as the
+user types, records searches, serves suggestions from a <strong>distributed
+cache</strong> (Redis nodes routed with <strong>consistent hashing</strong>),
+ranks results with a <strong>recency-aware "trending"</strong> score, and absorbs
+write pressure with <strong>batched writes</strong>.</p>
+
+<div class="kpi">
+  <div><span class="n">2.65 ms</span><span class="l">suggestion latency (server p95, warm)</span></div>
+  <div><span class="n">96%</span><span class="l">cache hit rate</span></div>
+  <div><span class="n">≈50×</span><span class="l">write reduction via batching</span></div>
+  <div><span class="n">~1/N</span><span class="l">keys remapped on node loss</span></div>
+</div>
+
+<p><strong>Tech stack:</strong> Python 3.12 + FastAPI · PostgreSQL 16 (primary
+store) · Redis (3 logical cache nodes, app-level consistent hashing) · plain
+HTML/CSS/JS frontend · Docker Compose for local infrastructure.</p>
+
+<!-- ============================ 1. ARCHITECTURE ============================ -->
+<h2>1. Architecture</h2>
+
+<p>Two independent paths. The <strong>read path</strong> (suggestions) is
+optimised for latency — cache first, database only on a miss. The
+<strong>write path</strong> (search submissions) is optimised for throughput —
+buffer in memory, aggregate, and write to the database in batches.</p>
+
+<pre>
+                ┌───────────────────────────────────────────────┐
+                │                Browser (frontend/)            │
+                │  search box · debounced /suggest · keyboard   │
+                │  nav · trending chips · basic/trending toggle │
+                └───────────────┬───────────────────────────────┘
+                                │  HTTP (JSON)
+                                ▼
+        ┌───────────────────────────────────────────────────────────┐
+        │                    FastAPI app (app/main.py)                │
+        │  GET /suggest → suggestions service                         │
+        │  POST /search → batch writer (buffer)                       │
+        │  GET /trending · /cache/debug · /metrics · POST /batch/flush│
+        └───────┬───────────────────────────┬───────────────┬────────┘
+                │ read path                  │ write path    │ metrics
+                ▼                            ▼               ▼
+   ┌────────────────────────┐   ┌────────────────────┐  ┌──────────────┐
+   │  Distributed cache      │   │   Batch writer      │  │  Metrics     │
+   │  consistent-hash ring   │   │  buffer + aggregate │  │ hit rate,    │
+   │  ┌──────┐┌──────┐┌────┐ │   │  + WAL + flush      │  │ DB r/w,      │
+   │  │redis1││redis2││ r3 │ │   └─────────┬──────────┘  │ p50/95/99    │
+   │  └──────┘└──────┘└────┘ │             │ one batched └──────────────┘
+   └───────────┬─────────────┘             │ write / flush
+               │ miss ↓ populate           ▼
+               └──────────────►  ┌────────────────────────────┐
+                                 │   PostgreSQL (app/db.py)     │
+                                 │   table `queries`            │
+                                 │   query, count, recent_score │
+                                 │   + prefix index             │
+                                 └────────────────────────────┘
+</pre>
+
+<h3>Data model</h3>
+<p>A single table keeps the system easy to reason about. The index
+<code>idx_queries_prefix ON queries (query text_pattern_ops)</code> makes
+<code>WHERE query LIKE 'prefix%'</code> use an index even on a UTF-8 database,
+which keeps prefix lookups fast at 120k rows.</p>
+<table>
+  <tr><th>Column</th><th>Meaning</th></tr>
+  <tr><td><code>query</code> (PK)</td><td>search string, stored normalised (lowercased, trimmed)</td></tr>
+  <tr><td><code>count</code></td><td>all-time number of searches — historical popularity</td></tr>
+  <tr><td><code>recent_score</code></td><td>time-decayed recent activity — drives trending</td></tr>
+  <tr><td><code>recent_score_updated_at</code></td><td>when recent_score was last refreshed (decay anchor)</td></tr>
+  <tr><td><code>last_searched_at</code></td><td>last submission time (diagnostics)</td></tr>
+</table>
+
+<h3>Concurrency model</h3>
+<p>Intentionally synchronous and simple: FastAPI runs sync endpoints in a
+threadpool; PostgreSQL access goes through a connection pool; the batch writer
+runs on its own daemon thread with lock-guarded shared state. No asyncio, so
+there are no <code>await</code> subtleties to explain.</p>
+
+<!-- ============================ 2. DATASET ============================ -->
+<h2 class="pb">2. Dataset — source &amp; loading</h2>
+<p>The system needs <code>query,count</code> rows (≥ 100,000 unique queries).</p>
+<ul>
+  <li><strong>Default (synthetic, reproducible):</strong>
+    <code>scripts/generate_dataset.py</code> builds <strong>120,000</strong>
+    unique queries from real-world head terms ("iphone", "java"…) + modifiers
+    ("review", "near me", "2024"…), with a <strong>Zipf-like (long-tail)</strong>
+    count distribution — the shape real search traffic has. It is deterministic
+    (fixed seed), so the dataset is identical on every run and needs no download.
+    Output: <code>data/queries.csv</code>.</li>
+  <li><strong>Using a real dataset instead:</strong> produce a CSV with a
+    <code>query,count</code> header (any open dataset of search queries / product
+    names / page titles; aggregate to derive counts if absent) and run
+    <code>python scripts/load_dataset.py --csv path/to/your.csv</code>.</li>
+</ul>
+<p><strong>Loading:</strong> <code>load_dataset.py</code> bulk-loads via
+PostgreSQL <code>COPY</code> into a staging temp table, then does a single
+<code>INSERT … ON CONFLICT DO UPDATE</code> into <code>queries</code> — fast, and
+idempotent (safe to re-run). Every query is normalised on load to match how the
+API normalises the user's prefix.</p>
+<pre>python scripts/generate_dataset.py        # writes data/queries.csv (120k rows)
+python scripts/load_dataset.py            # COPY → staging → upsert into queries</pre>
+
+<!-- ============================ 3. API ============================ -->
+<h2>3. API documentation</h2>
+<table>
+  <tr><th>Endpoint</th><th>Method</th><th>Purpose / behaviour</th></tr>
+  <tr><td><code>/suggest?q=&lt;prefix&gt;&amp;mode=</code></td><td>GET</td>
+      <td>Up to 10 prefix matches. <code>mode</code> = <code>basic</code> (all-time count) or <code>trending</code> (recency-aware). Empty/no-match → empty list, never an error.</td></tr>
+  <tr><td><code>/search</code></td><td>POST</td>
+      <td>Body <code>{"query":"…"}</code> → <code>{"message":"Searched"}</code>; records the query via the batch writer (no synchronous DB write).</td></tr>
+  <tr><td><code>/trending?limit=</code></td><td>GET</td>
+      <td>Currently trending searches (decayed recency, count as tie-breaker).</td></tr>
+  <tr><td><code>/cache/debug?prefix=</code></td><td>GET</td>
+      <td>Which cache node owns the prefix + whether it is a hit or a miss.</td></tr>
+  <tr><td><code>/metrics</code></td><td>GET</td>
+      <td>Cache hit rate, DB read/write counts, suggestion latency p50/p95/p99, per-node health.</td></tr>
+  <tr><td><code>/batch/flush</code></td><td>POST</td><td>Force a batch flush (for demos/tests).</td></tr>
+  <tr><td><code>/health</code></td><td>GET</td><td>Liveness + number of queries loaded.</td></tr>
+</table>
+<p class="muted">Interactive, auto-generated docs are also served at
+<code>/docs</code> (OpenAPI/Swagger).</p>
+<pre>curl "localhost:8000/suggest?q=iph&amp;mode=trending"
+  → {"prefix":"iph","mode":"trending","suggestions":[{"query":"iphone","count":5418280}, …]}
+
+curl -X POST localhost:8000/search -H 'Content-Type: application/json' -d '{"query":"iphone 15"}'
+  → {"message":"Searched","query":"iphone 15"}
+
+curl "localhost:8000/cache/debug?prefix=iph"
+  → {"node":"localhost:6391","status":"hit","cache_key":"suggest:trending:iph", …}</pre>
+
+<!-- ============================ 4. DESIGN ============================ -->
+<h2 class="pb">4. Design choices &amp; trade-offs</h2>
+
+<h3>Why PostgreSQL + an indexed prefix scan (not a trie / search engine)?</h3>
+<p>The dataset (100k–1M rows) is small enough that an indexed
+<code>LIKE 'prefix%'</code> returns the top 10 in single-digit milliseconds, and a
+relational table makes counts, recency and batched upserts trivial and durable.
+The cache absorbs the read volume, so the database is rarely the bottleneck. A
+trie or Elasticsearch would be the next step at much larger scale.</p>
+
+<h3>Why our own consistent hashing (not Redis Cluster)?</h3>
+<p>With plain <code>hash(key) % N</code>, adding/removing a node changes the
+bucket for almost every key, dumping the entire load onto the database at once.
+<strong>Consistent hashing</strong> places nodes and keys on a circle; a key
+belongs to the next node clockwise, so a node change only moves ~<code>1/N</code>
+of keys. Each physical node is placed at many points (<strong>virtual
+nodes</strong>, 150) so load is even. Doing it in app code keeps the interesting
+logic visible and explainable. <em>Trade-off:</em> we manage routing ourselves
+instead of getting it free from Redis Cluster — accepted, because the assignment
+is about understanding the mechanism.</p>
+
+<h3>Trending — recency-aware ranking (the 5 required points)</h3>
+<ol>
+  <li><strong>How recent searches are tracked:</strong> each row has
+    <code>recent_score</code>; on every search we decay the stored score by
+    elapsed time then add the new activity:
+    <code>recent_score = recent_score·e^(−λ·Δt) + delta</code>, with
+    <code>λ = ln2 / half_life</code> (default 10 min).</li>
+  <li><strong>How recency affects ranking:</strong> trending score =
+    <code>count + α · decayed_recent_score</code> (<code>α</code> scales recent
+    activity to be comparable to all-time counts), so a recently-hot query gets a
+    temporary boost.</li>
+  <li><strong>Avoiding permanent over-ranking of a brief spike:</strong> the
+    score <em>decays exponentially</em> — once the burst stops, the boost halves
+    every half-life and the query slides back to its count-based position.</li>
+  <li><strong>Cache update/invalidation when rankings change:</strong> a changed
+    query invalidates its prefixes' cached entries in both modes; short TTL is a
+    backstop. Basic and trending use separate cache keys.</li>
+  <li><strong>Trade-offs (freshness vs latency vs complexity):</strong> shorter
+    TTL / aggressive invalidation = fresher but more misses; the decay is computed
+    in SQL at read time, keeping writes simple at a tiny per-read cost. Defaults:
+    30s TTL, per-flush invalidation, 10-min half-life — all single config values.</li>
+</ol>
+
+<h3>Batch writes &amp; failure trade-offs</h3>
+<p>Writing to Postgres on every search is wasteful. Instead submissions are
+buffered and <strong>aggregated</strong> (repeated queries summed), then flushed
+in a single multi-row upsert either every <code>FLUSH_INTERVAL_SECONDS</code> or
+once <code>BATCH_SIZE</code> distinct queries are buffered. Result: ≈50× fewer DB
+writes.</p>
+<p><strong>What if it crashes before a flush?</strong> The buffer is in memory,
+so we add an optional <strong>write-ahead log</strong>: each submission is
+appended to a file; on flush we atomically rename the WAL aside, write the batch,
+then delete it; on startup we replay any leftover WAL. <em>Honest limits:</em> we
+flush to the OS but do not <code>fsync</code> per write (covers a process crash,
+not a power crash — a throughput trade-off), and recovery is
+<strong>at-least-once</strong> (a crash in the tiny window after commit but before
+deleting the WAL replays that batch — slight over-count). With the WAL disabled
+the writer is pure in-memory: faster, but a crash loses the un-flushed buffer.</p>
+
+<!-- ============================ 5. PERFORMANCE ============================ -->
+<h2 class="pb">5. Performance report</h2>
+<p class="muted">Measured locally (12-core Linux, Docker Postgres + 3 Docker
+Redis nodes, 120k-query dataset). Reproducible via <code>scripts/benchmark.py</code>,
+<code>batch_demo.py</code>, <code>cache_demo.py</code>.</p>
+
+<h3>5.1 Suggestion latency &amp; cache hit rate</h3>
+<p>Workload: 247 distinct prefixes; 6,000 warm requests at concurrency 12.</p>
+<table>
+  <tr><th>Metric</th><th>Cold (cache empty → DB)</th><th>Warm (cache populated)</th></tr>
+  <tr><td>client p50</td><td>22.1 ms</td><td>10.7 ms</td></tr>
+  <tr><td>client p95</td><td>34.6 ms</td><td>15.0 ms</td></tr>
+  <tr><td>client p99</td><td>38.4 ms</td><td>17.8 ms</td></tr>
+  <tr><td>throughput</td><td>—</td><td>~1,100 req/s</td></tr>
+</table>
+<p>Server-side suggestion latency (cache + DB, excluding HTTP overhead), from
+<code>/metrics</code>: <strong>p50 0.76 ms · p95 2.65 ms · p99 14.98 ms</strong>.
+<strong>Cache hit rate 96.0%</strong> (6,000 / 6,247). <strong>DB reads: 247</strong>
+— one per distinct prefix; every repeat served from cache (≈25× fewer DB reads).</p>
+
+<h3>5.2 Write reduction via batching</h3>
+<p>2,000 <code>POST /search</code> across 20 distinct queries:</p>
+<table>
+  <tr><th>Search submissions</th><th>DB row writes</th><th>Batch flushes</th><th>Reduction</th></tr>
+  <tr><td>2,000</td><td>40</td><td>2</td><td><strong>98% fewer (≈50×)</strong></td></tr>
+</table>
+
+<h3>5.3 Consistent-hashing behaviour</h3>
+<p>20,000 keys across 3 nodes (150 virtual nodes each):</p>
+<table>
+  <tr><th>Node</th><th>Keys</th><th>Skew vs even split</th></tr>
+  <tr><td>localhost:6391</td><td>6,396</td><td>−4.1%</td></tr>
+  <tr><td>localhost:6392</td><td>6,283</td><td>−5.8%</td></tr>
+  <tr><td>localhost:6393</td><td>7,321</td><td>+9.8%</td></tr>
+</table>
+<p>Removing a node remapped <strong>36.6%</strong> of keys (≈ the 33.3% target),
+versus ~100% for <code>hash % N</code>.</p>
+
+<h3>5.4 Crash recovery</h3>
+<p>30 buffered searches were submitted, the server was <code>kill -9</code>'d
+(no clean flush), and on restart the batch writer logged
+<code>recovered 30 searches from WAL</code> and the count appeared in Postgres —
+confirming buffered writes survive a process crash.</p>
+
+<h3>5.5 Screenshots</h3>
+<div class="shotrow">
+  <figure><img src="screenshots/typeahead.png" /><figcaption>Live typeahead dropdown (prefix highlighted, counts shown)</figcaption></figure>
+  <figure><img src="screenshots/search-result.png" /><figcaption>Search submission + dummy response + trending</figcaption></figure>
+</div>
+
+<!-- ============================ COVERAGE ============================ -->
+<h2 class="pb">Appendix A — Requirements coverage</h2>
+<table>
+  <tr><th>Rubric component (100 marks)</th><th>Status</th></tr>
+  <tr><td>Basic Implementation (60): dataset ingestion, search UI, suggestions API, search API, query-count updates, distributed cache w/ consistent hashing</td><td class="ok">Done ✓</td></tr>
+  <tr><td>Trending Searches (20): basic + recency-aware ranking, scoring/windowing explained, difference demonstrated</td><td class="ok">Done ✓</td></tr>
+  <tr><td>Batch Writes (20): buffer + aggregate + flush, write-reduction evidence, failure trade-offs</td><td class="ok">Done ✓</td></tr>
+</table>
+
+<h2>Appendix B — How to run</h2>
+<pre>cd search-typeahead
+docker compose up -d                       # Postgres + 3 Redis nodes
+python3 -m venv .venv && source .venv/bin/activate
+pip install -r requirements.txt
+python scripts/generate_dataset.py && python scripts/load_dataset.py
+uvicorn app.main:app                        # UI: http://localhost:8000  ·  API docs: /docs</pre>
+<p class="muted">Full source, comments, and the markdown versions of these
+sections are in the repository under <code>app/</code>, <code>docs/</code>, and
+<code>README.md</code>.</p>
