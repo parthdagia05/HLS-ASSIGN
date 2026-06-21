@@ -12,9 +12,12 @@ from __future__ import annotations
 
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Query
 
 from app import db
+from app.models import SuggestResponse
+from app.services import suggestions
+from app.textutil import normalize_query
 
 
 @asynccontextmanager
@@ -39,3 +42,16 @@ app = FastAPI(
 def health() -> dict:
     """Liveness probe: confirms the API is up and the database is reachable."""
     return {"status": "ok", "queries_loaded": db.row_count()}
+
+
+@app.get("/suggest", response_model=SuggestResponse)
+def suggest(q: str = Query(default="", description="The prefix the user typed")):
+    """Typeahead suggestions for a prefix.
+
+    Returns up to `SUGGESTION_LIMIT` (default 10) queries that start with `q`,
+    sorted by popularity. Empty/whitespace prefixes and prefixes with no matches
+    both return an empty list (never an error) so the UI can call this on every
+    keystroke safely.
+    """
+    results = suggestions.get_suggestions(q)
+    return SuggestResponse(prefix=normalize_query(q), suggestions=results)

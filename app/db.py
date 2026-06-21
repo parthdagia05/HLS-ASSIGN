@@ -22,6 +22,7 @@ from __future__ import annotations
 from psycopg_pool import ConnectionPool
 
 from app.config import settings
+from app.textutil import like_prefix_pattern
 
 # A process-wide connection pool. `open=True` connects lazily on first use.
 # min/max sizing is modest -- enough for a local demo with concurrent requests.
@@ -68,3 +69,29 @@ def row_count() -> int:
     with pool.connection() as conn:
         result = conn.execute("SELECT count(*) FROM queries").fetchone()
         return int(result[0]) if result else 0
+
+
+def fetch_suggestions(prefix: str, limit: int) -> list[dict]:
+    """Top `limit` queries that start with `prefix`, most popular first.
+
+    This is the "basic" ranking required for the core marks: pure all-time
+    popularity (ORDER BY count DESC). The recency-aware "trending" ranking is
+    layered on top of this in Phase 4.
+
+    `prefix` must already be normalised (lowercased/trimmed). The caller is
+    responsible for that; see app.services.suggestions.
+    """
+    pattern = like_prefix_pattern(prefix)
+    with pool.connection() as conn:
+        rows = conn.execute(
+            r"""
+            SELECT query, count
+            FROM queries
+            WHERE query LIKE %s ESCAPE '\'
+            ORDER BY count DESC, query ASC
+            LIMIT %s
+            """,
+            (pattern, limit),
+        ).fetchall()
+    # rows are tuples (query, count); shape them into plain dicts for the API.
+    return [{"query": q, "count": c} for q, c in rows]
