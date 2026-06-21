@@ -3,9 +3,9 @@
 Run locally with:
     uvicorn app.main:app --reload
 
-This scaffold wires up the database lifecycle and a /health endpoint.
-Feature endpoints (/suggest, /search, /cache/debug, /trending, /metrics) are
-added in later phases.
+Wires up the database + batch-writer lifecycle and exposes all endpoints:
+/suggest, /search, /trending, /cache/debug, /metrics, /batch/flush, /health.
+The frontend (frontend/) is served at the site root.
 """
 
 from __future__ import annotations
